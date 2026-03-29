@@ -113,37 +113,66 @@ if st.sidebar.button("🔮 Predict Placement"):
     st.divider()
     st.subheader("🏢 Company-Wise Placement Predictions (Dataset + Top MNCs)")
 
-    dataset_companies = sorted([c for c in df["company"].dropna().unique() if c != "None"])
-    extra_mncs = ["Amazon", "Google", "Microsoft", "Deloitte", "Capgemini", "Meta", "Adobe", "Accenture", "IBM"]
-    all_companies = sorted(list(set(dataset_companies + extra_mncs)))
+    from collections import Counter
+    # Use dataset companies directly
+    dataset_companies = sorted([c for c in df["company"].dropna().unique() if isinstance(c, str) and c.strip() != ""])
+    all_companies = dataset_companies
 
-    company_profiles = {
-        "TCS": {"skills":["C++","Java","Python"],"cgpa":6.5,"tech":60,"tier":3},
-        "Infosys": {"skills":["SQL","Python"],"cgpa":7.0,"tech":65,"tier":3},
-        "Accenture": {"skills":["React","Node","Java"],"cgpa":7.2,"tech":70,"tier":2},
-        "Wipro": {"skills":["Java","Python","SQL"],"cgpa":6.8,"tech":60,"tier":3},
-        "HCL": {"skills":["C++","SQL","Python"],"cgpa":6.8,"tech":62,"tier":3},
-        "Tech Mahindra": {"skills":["Java","HTML","CSS"],"cgpa":7.0,"tech":65,"tier":3},
-        "IBM": {"skills":["Python","SQL","DataScience"],"cgpa":7.8,"tech":75,"tier":2},
-        "Capgemini": {"skills":["Java","Spring","React"],"cgpa":7.2,"tech":70,"tier":2},
-        "Deloitte": {"skills":["Python","Excel","ML"],"cgpa":7.5,"tech":72,"tier":2},
-        "Amazon": {"skills":["Python","ML","DataScience"],"cgpa":8.0,"tech":80,"tier":1},
-        "Google": {"skills":["Python","DL","ML"],"cgpa":8.5,"tech":85,"tier":1},
-        "Meta": {"skills":["Python","React","DL"],"cgpa":8.4,"tech":84,"tier":1},
-        "Microsoft": {"skills":["C++","Python","ML"],"cgpa":8.2,"tech":83,"tier":1},
-        "Adobe": {"skills":["JavaScript","React","Node"],"cgpa":7.8,"tech":75,"tier":1}
-    }
+    # Calculate profiles dynamically
+    company_profiles = {}
+    placed_df = df[df['placed'] == 1].dropna(subset=['company'])
+    for comp in all_companies:
+        comp_data = placed_df[placed_df['company'] == comp]
+        if len(comp_data) == 0:
+            continue
+            
+        avg_cgpa = comp_data['cgpa'].mean()
+        avg_tech = comp_data['technical_score'].mean()
+        
+        all_skills = []
+        for s in comp_data['skills'].dropna():
+            all_skills.extend([str(x).strip() for x in str(s).split(',')])
+        top_skills = [k for k, v in Counter(all_skills).most_common(5)]
+        if not top_skills:
+            top_skills = ["Python", "SQL"]
+            
+        avg_sal = comp_data['salary'].mean() if 'salary' in comp_data.columns else 0
+        tier = 3
+        if avg_sal >= 1200000:
+            tier = 1
+        elif avg_sal >= 600000:
+            tier = 2
+            
+        company_profiles[comp] = {
+            "skills": top_skills,
+            "cgpa": avg_cgpa,
+            "tech": avg_tech,
+            "tier": tier
+        }
 
     company_probs = []
     for comp_name in all_companies:
         profile = company_profiles.get(comp_name, {
             "skills":["Python","SQL"], "cgpa":7.0, "tech":65, "tier":3
         })
-        skill_match = len(set(profile["skills"]) & set(user_skills)) / len(profile["skills"])
-        cgpa_score = min(cgpa / profile["cgpa"], 1)
-        tech_score = min(technical_score / profile["tech"], 1)
-        base_weight = {1: 1.25, 2: 1.0, 3: 0.8}[profile["tier"]]
-        comp_prob = proba * (0.5*skill_match + 0.25*cgpa_score + 0.25*tech_score) * base_weight
+        skill_match = len(set(profile["skills"]) & set(user_skills)) / max(len(profile["skills"]), 1)
+        
+        cgpa_req = max(profile.get("cgpa", 7.0), 1)
+        tech_req = max(profile.get("tech", 65), 1)
+        tier_val = profile.get("tier", 3)
+        
+        if tier_val == 1 and (cgpa < 8.0 or technical_score < 75):
+            comp_prob = 0.0
+        elif tier_val == 2 and (cgpa < 7.0 or technical_score < 65):
+            comp_prob = 0.0
+        else:
+            cgpa_score = min(cgpa / cgpa_req, 1.2)
+            tech_score = min(technical_score / tech_req, 1.2)
+            # Tier 3 (easier) has highest normal probability. Top tiers are naturally harder unless you far exceed requirements.
+            base_weight = {1: 0.7, 2: 0.85, 3: 1.0}.get(tier_val, 1.0)
+            comp_prob = proba * (0.5 * skill_match + 0.25 * cgpa_score + 0.25 * tech_score) * base_weight
+            comp_prob = min(comp_prob, 0.99)
+            
         company_probs.append((comp_name, round(comp_prob*100, 2)))
 
     comp_df = pd.DataFrame(company_probs, columns=["Company","Probability (%)"]).sort_values("Probability (%)", ascending=False)
